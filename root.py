@@ -25,14 +25,14 @@ def suchestv_viborka():
             return r
 
 c = ROOT.TCanvas("myfunc", "The Canvas Title", 1200, 500)
-ff = TF1("ff1", f, -1, 1, 1)
+ff = TF1("ff1", f, -1, 1)
 ff.SetNpx(10000)
 ff.SetParameter(0, norm);
 ff.Draw()
 c.Draw()
 
 c = ROOT.TCanvas("myfunc","The Canvas Title", 1200, 500)
-ff = TF1("ff1", f, -1, 1, 1)
+ff = TF1("ff1", f, -1, 1)
 ff.SetNpx(10000)
 ff.SetParameter(0, norm)
 h1 = TH1F("h1", "fnneuman method", 500, -1, 1)
