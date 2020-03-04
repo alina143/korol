@@ -1,4 +1,5 @@
-
+import sys, ROOT
+from ROOT import gRandom, TCanvas, TFormula, TF1, TH1F, TStopwatch
 
 a = -1
 b = 1
