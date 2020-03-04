@@ -43,7 +43,7 @@ h1.Fit(ff)
 c.Draw()
 
 c = ROOT.TCanvas("myfunc","The Canvas Title", 1200, 500)
-ff2 = TF1("ff2", f, -1, 1, 1)
+ff2 = TF1("ff2", f, -1, 1)
 ff2.SetNpx(10000)
 ff2.SetParameter(0, norm)
 h2 = TH1F("h2", "Method suchestv viborki", 500, -1, 1)
