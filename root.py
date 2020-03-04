@@ -15,7 +15,7 @@ def neuman(norm, a, b):
             return r
 
 
-def g(x): return 1+(x**2+0.001)
+def g(x): return 1+x**2
 def suchestv_viborka():
     fmax = g(b)
     while True:
