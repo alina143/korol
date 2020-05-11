@@ -1,0 +1,287 @@
+visual = 10
+import os
+os.environ['DISPLAY']=':1.0'
+from mayavi import mlab
+mlab.options.offscreen = True
+mlab.init_notebook('x3d')
+
+fcurrent = None
+def fc():
+    global fcurrent
+    fcurrent = mlab.figure(fcurrent)
+    return fcurrent
+def vrmlview(fname):
+    mlab.clf()
+    from mayavi.sources.vrml_importer import VRMLImporter
+    r = VRMLImporter()
+    r.initialize(fname)
+    engine = mlab.get_engine()
+    f = fc()
+    engine.add_source(r)
+    f
+    return f
+
+import ROOT
+import Geant4
+from math import *
+import math
+canvas = ROOT.TCanvas("canvas")
+canvas.cd()
+
+
+from Geant4 import cm, mm, MeV, GeV, TeV, G4ThreeVector
+
+def material(name):
+    m = Geant4.G4NistManager.Instance().FindOrBuildMaterial(name)
+    #assert m is not None
+    return m
+
+def particle(name):
+    p = Geant4.G4ParticleTable.GetParticleTable().FindParticle(name)
+    #assert p is not None
+    return p
+
+class SomeBox:
+    def __init__(self, name, materialName, parent, x, y, z, sx, sy, sz):
+
+        self.name = name
+
+        #shape
+        self.solid = Geant4.G4Box(self.name.lower()+"box", 0.5*sx, 0.5*sy, 0.5*sz)
+
+        m = material(materialName)
+        
+        #material
+        self.logical = Geant4.G4LogicalVolume( self.solid, m, self.name, None, None, None, True)
+
+        r0 = G4ThreeVector(x, y, z)
+        
+        #placement
+        self.physical = Geant4.G4PVPlacement(None, r0, self.logical, self.name, parent, False, 0)
+        
+class World(SomeBox):
+    
+    def __init__(self, x, y, z, sx, sy, sz):
+        super().__init__("World", "G4_Galactic", None, x, y, z, sx, sy, sz)
+        
+class DetectorConstructor(Geant4.G4VUserDetectorConstruction):
+    
+    def __init__(self):
+        super().__init__()
+        self.world = World(0, 0, 0, 200*cm, 200*cm, 500*cm)
+        self.gold_plate = SomeBox("Plate", "G4_Au", self.world.logical, 0, 0, (100+0.05)*cm, 10.0*cm, 10.0*cm, 0.1*cm)
+        self.absorber = SomeBox("Absorber", "G4_Pb", self.world.logical, 0, 0, (100+0.1+50)*cm, 100.0*cm, 100.0*cm, 100.0*cm)
+
+    def Construct(self):
+        return self.world.physical
+class PrimaryGenerator(Geant4.G4VUserPrimaryGeneratorAction):
+
+    def __init__(self):
+        super().__init__()
+
+        self.particlename = "e-"
+        self.energy = 10.0*MeV
+        
+        self.gun = Geant4.G4ParticleGun()
+
+        # set particle type
+        self.particle = particle(self.particlename)
+        self.gun.SetParticleDefinition(self.particle)
+
+        pass
+
+    def GeneratePrimaries(self, anEvent):
+
+        # shoot initial position energy and set
+        p = Geant4.G4ThreeVector(0.0, 0.0, 0.0)
+        self.gun.SetParticlePosition(p)
+
+        #  kinetic energy 
+        energy = self.energy - self.particle.GetPDGMass()
+        if energy < 0.0:
+            energy = 0.0
+        self.gun.SetParticleEnergy(energy)
+
+       
+        phi = ROOT.gRandom.Uniform(0.0, 2 * math.pi) # равномерно по фи
+        theta = ROOT.gRandom.Gaus(0.0, 5.0*math.pi/180) # разброс 5 градусов по theta
+
+        vx = math.sin(theta) * math.cos(phi)
+        vy = math.sin(theta) * math.sin(phi)
+        vz = math.cos(theta)
+        pdir = Geant4.G4ThreeVector(vx, vy, vz)
+        self.gun.SetParticleMomentumDirection(pdir)
+
+        # actual particle generator
+        self.gun.GeneratePrimaryVertex(anEvent)
+class SensitiveDetector(Geant4.G4VSensitiveDetector):
+    
+    def __init__(self, energy_hist = None, coord_hist = None):
+        super().__init__()
+        
+        self.hit_counter = 0
+        
+        self.energy_hist = energy_hist
+        self.coord_hist = coord_hist
+        
+        self.energy = 0.0 # in MeV
+        self.step_X = list()
+        self.step_Y = list()
+    
+    def ProcessHits (self, step, rohistory):
+        self.hit_counter += 1 #hits in one event
+        
+        #don't need parameters without corresponding histograms
+        if self.energy_hist is not None:
+            deposit = step.GetTotalEnergyDeposit() / MeV
+            self.energy += deposit
+    
+        if self.coord_hist is not None: 
+            self.step_X.append(step.GetPostStepPoint().GetPosition().getX())
+            self.step_Y.append(step.GetPostStepPoint().GetPosition().getY()) 
+
+        return True
+
+    #reset parameters before new event
+    def reset_memory(self): 
+        
+        self.energy = 0.0
+        self.hit_counter = 0;
+        self.step_X.clear()
+        self.step_Y.clear()
+    
+    #reset histograms (before new run)
+    def reset_hist(self):
+        
+        if self.energy_hist is not None:
+            self.energy_hist.Reset()
+        if self.coord_hist is not None:
+            self.coord_hist.Reset()
+
+    def process(self):
+        #don't add without if no hits
+        if self.hit_counter > 0:
+            
+            if self.energy_hist is not None:
+                self.energy_hist.Fill(self.energy)
+            
+            if self.coord_hist is not None:
+                avg_X = sum(self.step_X)/len(self.step_X)
+                avg_Y = sum(self.step_Y)/len(self.step_Y)
+                self.coord_hist.Fill(avg_X, avg_Y)
+class EventAction(Geant4.G4UserEventAction):
+
+    def __init__(self):
+        super().__init__()
+        self.detectors = set()
+        self.event_counter  = 0
+
+    def BeginOfEventAction(self, event):
+        
+        #reset histograms if it is first event
+        if(self.event_counter == 0):
+            for a in self.detectors:
+                a.reset_hist() 
+                
+        #calculate energy and coordinates for each new event       
+        for a in self.detectors: 
+            a.reset_memory()
+            
+        self.event_counter += 1
+                        
+    def EndOfEventAction(self, event):
+        
+        for a in self.detectors:
+            a.process() #fill histograms
+
+    def registerDetector(self, a):
+        self.detectors.add(a)
+        
+    def resetDetectorsHist(self):
+        for a in self.detectors:
+            a.reset_hist()
+randEngine = Geant4.Ranlux64Engine()
+Geant4.HepRandom.setTheEngine(randEngine)
+
+manager = Geant4.gRunManager
+PhysicsList = Geant4.FTFP_BERT
+physics = PhysicsList()
+manager.SetUserInitialization(physics)
+constructor = DetectorConstructor()
+manager.SetUserInitialization(constructor)
+
+generator = PrimaryGenerator()
+manager.SetUserAction(generator)
+eventcallback = EventAction()
+manager.SetUserAction(eventcallback)
+plate_energy = ROOT.TH1F("plate_energy", "Au plate", 100, 0.0, 10.0)
+absorber_energy = ROOT.TH1F("absorber_energy", "Pb absorber", 100, 0.0, 10.0)
+plate_coords = ROOT.TH2F("plate_coords", "Average coordinates", 100, -5.0, 5.0, 100, -5.0, 5.0)
+plate_coords.SetXTitle("X")
+plate_coords.SetYTitle("Y")
+plate_sdetector = SensitiveDetector(plate_energy, plate_coords)
+absorber_sdetector = SensitiveDetector(absorber_energy)
+
+constructor.gold_plate.logical.SetSensitiveDetector(plate_sdetector)
+constructor.absorber.logical.SetSensitiveDetector(absorber_sdetector)
+
+eventcallback.registerDetector(plate_sdetector)
+eventcallback.registerDetector(absorber_sdetector)
+
+eventcallback.resetDetectorsHist()
+manager.Initialize()
+manager.BeamOn(1)
+#Geant4.gApplyUICommand("/run/initialize")
+Geant4.gApplyUICommand("/vis/viewer/flush")
+Geant4.gApplyUICommand("/vis/open VRML2FILE")
+Geant4.gApplyUICommand("/vis/viewer/set/autoRefresh false")
+Geant4.gApplyUICommand("/vis/viewer/refresh")
+Geant4.gApplyUICommand("/vis/scene/create")
+Geant4.gApplyUICommand("/vis/scene/add/volume")
+Geant4.gApplyUICommand("/vis/viewer/set/globalLineWidthScale 5")
+#Geant4.gApplyUICommand("/vis/geometry/set/colour Calorimeter red")
+Geant4.gApplyUICommand("/vis/drawVolume")
+#Geant4.gApplyUICommand("/vis/viewer/flush")
+Geant4.gApplyUICommand("/vis/viewer/set/viewpointVector -1 -1 0")
+Geant4.gApplyUICommand("/vis/viewer/set/lightsVector -1 -1 0")
+Geant4.gApplyUICommand("/vis/modeling/trajectories/create/drawByParticleID")
+Geant4.gApplyUICommand("/vis/modeling/trajectories/drawByParticleID-0/set gamma white")
+Geant4.gApplyUICommand("/vis/modeling/trajectories/drawByParticleID-0/set proton blue")
+Geant4.gApplyUICommand("/vis/modeling/trajectories/drawByParticleID-0/set e- yellow")
+Geant4.gApplyUICommand("/vis/modeling/trajectories/drawByParticleID-0/set e+ green")
+Geant4.gApplyUICommand("/vis/sceneHandler/attach")
+Geant4.gApplyUICommand("/vis/viewer/set/style wireframe")
+Geant4.gApplyUICommand("/vis/set/lineWidth 4")
+#Geant4.gApplyUICommand("/vis/viewer/set/viewpointThetaPhi 120. 150.")
+Geant4.gApplyUICommand("/vis/viewer/zoom 1.")
+Geant4.gApplyUICommand("/tracking/storeTrajectory 1")
+Geant4.gApplyUICommand("/vis/scene/add/trajectories")
+Geant4.gApplyUICommand("/vis/scene/add/hits")
+Geant4.gApplyUICommand("/vis/scene/add/trajectories smooth")
+Geant4.gApplyUICommand("/vis/scene/endOfEventAction accumulate")
+Geant4.gApplyUICommand("/vis/scene/add/scale")
+Geant4.gApplyUICommand("/vis/scene/add/axes")
+Geant4.gApplyUICommand("/vis/scene/add/eventID")
+Geant4.gApplyUICommand("/vis/scene/add/date")
+Geant4.gApplyUICommand("/vis/viewer/set/autoRefresh true")
+Geant4.gApplyUICommand("/vis/enable false")
+import glob, os
+for i in glob.glob("g4*.wrl"):
+    print("Remove",i)
+    os.unlink(i)
+
+Geant4.gApplyUICommand("/vis/enable true")
+
+import glob
+print(glob.glob("*.wrl"))
+
+eventcallback.resetDetectorsHist()
+manager.BeamOn(10000)
+plate_sdetector.energy_hist.Draw()
+canvas.Draw()
+
+absorber_sdetector.energy_hist.Draw()
+canvas.Draw()
+
+plate_sdetector.coord_hist.Draw("lego")
+canvas.Draw()
